@@ -1,82 +1,177 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>MHTML to JSON Extractor</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      background-color: #2a0944;
-      color: #ffffff;
-      padding: 20px;
-    }
-    h2 {
-      color: #00e6e6;
-    }
-    textarea {
-      width: 100%;
-      height: 400px;
-      margin-top: 10px;
-      padding: 10px;
-      font-family: monospace;
-      font-size: 14px;
-      background-color: #1e1e1e;
-      color: #ffffff;
-      border: 1px solid #555;
-      border-radius: 6px;
-    }
-    .btn {
-      background-color: #00c896;
-      border: none;
-      color: white;
-      padding: 10px 16px;
-      margin: 10px 5px 0 0;
-      cursor: pointer;
-      border-radius: 4px;
-      font-size: 14px;
-    }
-    .btn:hover {
-      background-color: #00a57f;
-    }
-  </style>
+    <meta charset="UTF-8">
+    <title>HTML to JSON Extractor</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        input { margin-bottom: 20px; }
+        pre { background: #f0f0f0; padding: 10px; border-radius: 5px; white-space: pre-wrap; overflow-x: auto; }
+        button { margin-left: 10px; padding: 8px 15px; cursor: pointer; }
+        .container { max-width: 800px; margin: 0 auto; }
+    </style>
 </head>
 <body>
-  <h2>MHTML → JSON Converter</h2>
-  <input type="file" id="fileInput" accept=".mhtml" />
-  <button class="btn" onclick="copyJSON()">📋 Copy JSON</button>
-  <textarea id="jsonOutput" readonly placeholder="Formatted JSON will appear here..."></textarea>
+    <div class="container">
+        <h2>Upload HTML file to JSON Extractor</h2>
+        <input type="file" id="fileInput" accept=".html">
+        <button onclick="copyOutput()">Copy JSON</button>
+        <pre id="output">Waiting for file upload...</pre>
+    </div>
 
-  <script>
-    document.getElementById('fileInput').addEventListener('change', async function (e) {
-      const file = e.target.files[0];
-      if (!file) return;
-      const text = await file.text();
+    <script>
+        /**
+         * Cleans a string by normalizing whitespace.
+         * @param {string} text - The text string to clean.
+         * @returns {string} The cleaned text content.
+         */
+        function cleanTextString(text) {
+            return text.replace(/\s+/g, " ").trim();
+        }
 
-      // Simple parsing logic to extract mock steps from MHTML content
-      // You can extend this to real <div> or <span> parsing if content is HTML embedded
-      const entries = [];
-      const regex = /Step (\d+)[\s\S]*?((Correct|Incorrect|Criticize)[\s\S]*?)\n\n/g;
-      let match;
-      while ((match = regex.exec(text)) !== null) {
-        entries.push({
-          step_number: parseInt(match[1]),
-          status: match[3],
-          is_regenerated: false,
-          type: "reasoning",
-          content: match[2].trim(),
-          intervention: ""
+        /**
+         * Extracts step-by-step information from the parsed HTML document.
+         * @param {Document} doc - The parsed HTML document.
+         * @returns {Array<Object>} An array of step objects.
+         */
+        function extractSteps(doc) {
+            const reasoningSteps = [];
+            const finalAnswerSteps = [];
+
+            // Identify the "Final Answer" heading
+            const finalAnswerHeading = doc.querySelector('h2.ant-typography.css-zi6mul[style*="color: rgb(255, 209, 128);"]');
+            let finalAnswerSectionContainer = null;
+
+            if (finalAnswerHeading) {
+                // Assuming the content related to the Final Answer is in the next sibling div
+                // or a common parent after the heading. For robustness, let's look for
+                // the immediate following sibling. If your structure places it elsewhere,
+                // this selector might need adjustment (e.g., .closest('.main-final-answer-section')).
+                finalAnswerSectionContainer = finalAnswerHeading.nextElementSibling;
+                // If nextElementSibling isn't a div containing the final answer step,
+                // you might need to adjust this to `finalAnswerHeading.parentNode.querySelector('.some-final-answer-wrapper-class')`
+                // if there's a specific container for the whole final answer block.
+            }
+
+            // Select all potential step containers
+            const allStepContainers = [...doc.querySelectorAll('div.ant-card.ant-card-bordered.css-zi6mul')];
+
+            allStepContainers.forEach(container => {
+                const stepH3 = container.querySelector('h3.ant-typography.css-zi6mul');
+                if (!stepH3) {
+                    return; // Skip if no step H3 found in this container
+                }
+
+                const match = stepH3.textContent.match(/Step\s+(\d+)/i);
+                if (!match) {
+                    return; // Skip if H3 doesn't contain "Step X"
+                }
+
+                const step_number = parseInt(match[1]);
+
+                let status = "correct";
+                if (container.querySelector('span.ant-tag-red')) {
+                    status = "incorrect";
+                } else if (container.querySelector('span.ant-tag-blue')) {
+                    status = "criticize";
+                } else if (container.querySelector('span.ant-tag-orange')) {
+                    status = "rewrite";
+                }
+
+                const is_regenerated = !!container.querySelector('span.ant-tag-gold.css-zi6mul');
+
+                const stepContentButton = container.querySelector('button[tooltip="Copy Step"][text]');
+                const step_content = stepContentButton ? cleanTextString(stepContentButton.getAttribute("text").replace(/^3D"?|"?$/g, '')) : "";
+
+                const statusContentButton = container.querySelector('button[tooltip="Copy Suggestion"][text]');
+                const status_content = statusContentButton ? cleanTextString(statusContentButton.getAttribute("text").replace(/^3D"?|"?$/g, '')) : "";
+
+                const humanFeedbackButton = container.querySelector('button[tooltip="Copy Human Feedback"][text]');
+                const human_feedback = humanFeedbackButton ? cleanTextString(humanFeedbackButton.getAttribute("text").replace(/^3D"?|"?$/g, '')) : "";
+
+                // Determine if this is a "final_answer" type step
+                let type = "reasoning";
+                if (finalAnswerSectionContainer && finalAnswerSectionContainer.contains(container)) {
+                    // This checks if the current step container is a descendant of the identified finalAnswerSectionContainer.
+                    type = "final_answer";
+                }
+                
+                const stepObject = {
+                    step_number,
+                    status,
+                    is_step_regenerated: is_regenerated,
+                    type: type,
+                    step_content,
+                    status_content,
+                    human_feedback
+                };
+
+                if (type === "final_answer") {
+                    finalAnswerSteps.push(stepObject);
+                } else {
+                    reasoningSteps.push(stepObject);
+                }
+            });
+
+            // Sort reasoning steps by step_number
+            reasoningSteps.sort((a, b) => a.step_number - b.step_number);
+
+            // Final answer steps are typically just one "Step 1" but we'll sort them too for consistency
+            finalAnswerSteps.sort((a, b) => a.step_number - b.step_number);
+
+
+            // Combine reasoning steps first, then final answer steps
+            return [...reasoningSteps, ...finalAnswerSteps];
+        }
+
+        /**
+         * Copies the content of the output pre tag to the clipboard.
+         */
+        function copyOutput() {
+            const outputElement = document.getElementById("output");
+            if (outputElement) {
+                const text = outputElement.textContent;
+                navigator.clipboard.writeText(text)
+                    .then(() => alert("Copied to clipboard!"))
+                    .catch(err => console.error("Failed to copy text: ", err));
+            }
+        }
+
+        // --- File Input Event Listener ---
+        document.getElementById("fileInput").addEventListener("change", event => {
+            const file = event.target.files[0];
+            if (!file) {
+                document.getElementById("output").textContent = "No file selected.";
+                return;
+            }
+
+            const reader = new FileReader();
+
+            reader.onload = function () {
+                const htmlContent = reader.result;
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(htmlContent, "text/html");
+
+                try {
+                    const steps = extractSteps(doc);
+                    document.getElementById("output").textContent = JSON.stringify(steps, null, 2);
+                } catch (e) {
+                    document.getElementById("output").textContent = "Error processing HTML: " + e.message;
+                    console.error("Error during step extraction:", e);
+                }
+            };
+
+            reader.onerror = function(e) {
+                document.getElementById("output").textContent = "Error reading file: " + e.target.error.name;
+                console.error("Error reading file:", e.target.error);
+            };
+            reader.onabort = function() {
+                document.getElementById("output").textContent = "File read aborted.";
+                console.warn("File read aborted.");
+            };
+
+            reader.readAsText(file);
         });
-      }
-
-      document.getElementById('jsonOutput').value = JSON.stringify(entries, null, 2);
-    });
-
-    function copyJSON() {
-      const textarea = document.getElementById('jsonOutput');
-      textarea.select();
-      document.execCommand('copy');
-      alert('JSON copied to clipboard!');
-    }
-  </script>
+    </script>
 </body>
 </html>
